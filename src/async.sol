@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import "openzeppelin-contracts/utils/math/Math.sol";
+import "openzeppelin-contracts/contracts/utils/math/Math.sol";
 
 struct Promise {
     address msgSender;
@@ -58,21 +58,20 @@ contract AsyncFunction {
     ) external payable promise_exists(promiseId) {
         uint256 start = gasleft();
 
-        uint256 value = promises[msg.sender][promiseId].value;
-        address callback_contract = promises[msg.sender][promiseId]
+        address promiseTxOrigin = promises[msg.sender][promiseId].txOrigin;
+        uint256 promiseValue = promises[msg.sender][promiseId].value;
+        address callbackContract = promises[msg.sender][promiseId]
             .callbackContract;
-        string memory callback_name = promises[msg.sender][promiseId]
+        string memory callbackName = promises[msg.sender][promiseId]
             .callbackName;
 
         delete promises[msg.sender][promiseId];
-        emit Resolved(callback_contract, promiseId, data);
+        emit Resolved(callbackContract, promiseId, data);
 
-        if (
-            callback_contract != address(0) && bytes(callback_name).length > 0
-        ) {
-            (bool success, ) = callback_contract.call{value: msg.value}(
+        if (callbackContract != address(0) && bytes(callbackName).length > 0) {
+            (bool success, ) = callbackContract.call{value: msg.value}(
                 abi.encodeWithSignature(
-                    string.concat(callback_name, "(address,bytes)"),
+                    string.concat(callbackName, "(address,bytes)"),
                     promises[msg.sender][promiseId].txOrigin,
                     data
                 )
@@ -82,6 +81,16 @@ contract AsyncFunction {
 
         uint256 end = gasleft();
         uint256 used = start - end;
-        uint256 refund = used * tx.gasprice + msg.value;
+        uint256 refund = Math.min(used * tx.gasprice + msg.value, promiseValue);
+
+        (bool success_, ) = tx.origin.call{value: refund}("");
+        require(success_);
+
+        if (promiseValue - refund > 0) {
+            (bool success__, ) = promiseTxOrigin.call{
+                value: promiseValue - refund
+            }("");
+            require(success__);
+        }
     }
 }
