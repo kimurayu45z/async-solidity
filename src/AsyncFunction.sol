@@ -4,7 +4,6 @@ pragma solidity ^0.8.13;
 import "openzeppelin-contracts/contracts/utils/math/Math.sol";
 
 struct Promise {
-    address msgSender;
     uint256 id;
     address txOrigin;
     uint256 value;
@@ -13,32 +12,39 @@ struct Promise {
 }
 
 contract AsyncFunction {
-    mapping(address => uint256) public sequence;
-    mapping(address => mapping(uint256 => Promise)) public promises;
+    address public owner;
+    uint256 public sequence;
+    mapping(uint256 => Promise) public promises;
+
+    constructor() {
+        owner = msg.sender;
+    }
 
     event Resolved(address, uint256, bytes);
 
+    modifier isOwner() {
+        require(msg.sender == owner);
+        _;
+    }
+
     modifier promise_exists(uint256 promise_id) {
         require(
-            promises[msg.sender][promise_id].msgSender == address(0),
+            promises[promise_id].txOrigin != address(0),
             "Promise corresponding to the sequence does not exist."
         );
         _;
     }
 
-    function new_promise() external payable returns (Promise memory) {
-        uint256 seq = sequence[msg.sender];
-        sequence[msg.sender] = seq + 1;
-
+    function new_promise() external payable isOwner returns (Promise memory) {
         Promise memory value = Promise(
-            msg.sender,
-            seq,
+            sequence,
             tx.origin,
             msg.value,
             address(0),
             ""
         );
-        promises[msg.sender][seq] = value;
+        promises[sequence] = value;
+        sequence = sequence + 1;
 
         return value;
     }
@@ -47,32 +53,30 @@ contract AsyncFunction {
         uint256 promiseId,
         address callbackContract,
         string calldata callbackName
-    ) external promise_exists(promiseId) {
-        promises[msg.sender][promiseId].callbackContract = callbackContract;
-        promises[msg.sender][promiseId].callbackName = callbackName;
+    ) external isOwner promise_exists(promiseId) {
+        promises[promiseId].callbackContract = callbackContract;
+        promises[promiseId].callbackName = callbackName;
     }
 
     function resolve(
         uint256 promiseId,
         bytes calldata data
-    ) external payable promise_exists(promiseId) {
+    ) external payable isOwner promise_exists(promiseId) {
         uint256 start = gasleft();
 
-        address promiseTxOrigin = promises[msg.sender][promiseId].txOrigin;
-        uint256 promiseValue = promises[msg.sender][promiseId].value;
-        address callbackContract = promises[msg.sender][promiseId]
-            .callbackContract;
-        string memory callbackName = promises[msg.sender][promiseId]
-            .callbackName;
+        address promiseTxOrigin = promises[promiseId].txOrigin;
+        uint256 promiseValue = promises[promiseId].value;
+        address callbackContract = promises[promiseId].callbackContract;
+        string memory callbackName = promises[promiseId].callbackName;
 
-        delete promises[msg.sender][promiseId];
+        delete promises[promiseId];
         emit Resolved(callbackContract, promiseId, data);
 
         if (callbackContract != address(0) && bytes(callbackName).length > 0) {
             (bool success, ) = callbackContract.call{value: msg.value}(
                 abi.encodeWithSignature(
                     string.concat(callbackName, "(address,bytes)"),
-                    promises[msg.sender][promiseId].txOrigin,
+                    promiseTxOrigin,
                     data
                 )
             );
